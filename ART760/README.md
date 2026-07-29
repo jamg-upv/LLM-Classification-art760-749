@@ -1,4 +1,5 @@
 # ART-760: Does the classifier beat chance?
+**Version:** 1.0.0 (`art760/v1.0.0`) · [Changelog](CHANGELOG.md)
 
 **A Monte Carlo simulation procedure for the empirical estimation of performance baselines in imbalanced datasets**
 
