@@ -25,6 +25,8 @@ Versions follow the `art760/vX.Y.Z` tag convention described in the root README.
   numbers.
 - Module 5 in the Python/Jupyter supplementary notebook, keeping both
   implementations at feature parity.
+- Simulation distribution (`probs_k`) recorded in the provenance block, so a
+  saved results file documents which scenario produced it.
 
 ### Changed
 - Modules 3 and 4 refactored to expose the pipeline internals as named
@@ -40,6 +42,10 @@ Versions follow the `art760/vX.Y.Z` tag convention described in the root README.
 - Excel documentation referred to a `Validation` sheet that the notebook never
   wrote. The known-case vectors are written to `Simulations`; the per-case
   results are saved to `Inspection` by `inspection-save`.
+- Notebook documentation stated that `Spec` was read only by Module 1; it is
+  read again by Module 2 and determines the simulation scenario.
+- Notebook documentation stated that Module 3 skips simulation when
+  `Simulations` already contains data; Module 3 always overwrites the sheet.
 
   
 ## [1.0.0] — 2026-07-29
