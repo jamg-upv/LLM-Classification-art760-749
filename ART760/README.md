@@ -39,6 +39,29 @@ Any real classifier scoring above the upper bound of this interval can be consid
 
 ---
 
+## Scenarios
+
+The scenario is not hard-coded: it is determined by the `Proportion` column of
+the `Spec` sheet, which becomes the probability vector passed to the random
+generator. Use one Excel file per scenario.
+
+| Scenario | `Proportion` | Question it answers |
+|----------|--------------|---------------------|
+| A — uniform | 1/k for every level | What can be expected from a classifier assigning labels at random, with no knowledge of the corpus distribution? The purest chance reference, and the most conservative. |
+| B — informed | observed frequency in the gold standard | What can be expected from a classifier that reproduces the label distribution of the gold standard but has no genuine discriminative capacity? The scenario most comparable with real classifiers. |
+
+Both files are otherwise identical, including the `Corpus` sheet. Module 2
+prints the loaded distribution and the corpus prevalence separately, so the
+active scenario can be verified before simulating; the `Stability` sheet records
+the distribution used, so a saved results file is self-documenting.
+
+When generating a synthetic corpus, note that `Proportion` fixes both the true
+labels and the simulated ones. To test Scenario A on an imbalanced corpus,
+generate the corpus with the imbalanced Spec first, then set `Proportion` to
+uniform before running Module 3. This does not arise with a real corpus, where
+Module 1 is bypassed.
+---
+
 ## Repository contents
 
 ```
@@ -82,7 +105,7 @@ The pipeline uses a single Excel file as both input and output container. One fi
 
 | Sheet | Role | Written by |
 |-------|------|------------|
-| `Spec` | Corpus parameters: `n_items`, `Label`, `Proportion` | User |
+| `Spec` | Label levels and probabilities: `n_items`, `Label`, `Proportion`. Selects the simulation scenario | User |
 | `Corpus` | Gold standard dataset: `ID`, `Label` (+ optional `Title`, `Abstract`) | Module 1 or user |
 | `Simulations` | Monte Carlo simulation matrix: `ID` + one column per iteration | Module 3 |
 | `Reporting` | Empirical baseline summary: mean, median, SD, CI95 per metric | Module 4 |
