@@ -6,7 +6,7 @@ Notebooks and pipelines for the empirical evaluation of LLM-assisted classificat
 
 | #  | Folder    | Version | What it does |
 | --- | --------- | ------- | ------------ |
-| 01 |  [`ART760/`](ART760) |  [1.0.0](../../releases/tag/art760%2Fv1.0.0) | Monte Carlo simulation procedure for empirical estimation of performance baselines in imbalanced datasets |
+| 01 |  [`ART760/`](ART760) |  [1.1.0](../../releases/tag/art760%2Fv1.1.0) | Monte Carlo simulation procedure for empirical estimation of performance baselines in imbalanced datasets |
 | 02 | `ART749/` | — | *(coming soon)* |
 
 Each folder has its own README with full documentation and run instructions.
