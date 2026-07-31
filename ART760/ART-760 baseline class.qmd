@@ -6,26 +6,58 @@ editor: visual
 
 # How To cite
 
-
 # Input Excel file
 
 The working Excel file serves as both the input and output container for the entire procedure. It must contain the following sheets:
 
-**`Spec`** — Defines the corpus parameters for synthetic generation. Required columns: `n_items` (total number of items, entered only in the first row), `Label` (one row per label level), and `Proportion` (relative frequency of each label, need not sum exactly to 1 as the module renormalises automatically). This sheet is read by Module 1 and ignored by all subsequent modules.
+**`Spec`** — Defines the label levels and their probabilities. Required columns: `n_items` (total number of items, entered only in the first row), `Label` (one row per label level), and `Proportion` (relative frequency of each label, need not sum exactly to 1 as it is renormalised automatically). This sheet has two distinct roles. Module 1 uses it to generate a synthetic corpus. Module 2 reads it again to build `probs_k`, the probability vector that Module 3 passes to the random generator — which is what selects the simulation scenario. It is therefore read on every run, including when Module 1 is bypassed.
 
 **`Corpus`** — Contains the labelled dataset. Required columns: `ID` (unique item identifier) and `Label` (category assigned to each item). Optional columns: `Title` and `Abstract`. This sheet is written by Module 1 if generating a synthetic corpus, or populated manually by the user if working with a real dataset. If this sheet already contains data when Module 1 runs, synthetic generation is skipped entirely.
 
-**`Simulations`** — Receives the simulated classification vectors produced by Module 3. Leave blank before the first run. If it already contains data from a previous run, Module 3 will skip the simulation step and proceed directly to metric calculation using the existing data.
+**`Simulations`** — Receives the simulated classification vectors produced by Module 3, one column per iteration. Leave blank before the first run. Module 3 overwrites this sheet every time it is executed; to reuse an existing set of simulations, do not execute Module 3 and go straight to Module 4, which reads whatever the sheet contains.
 
 **`Reporting`** — Receives the metric summary table produced by Module 4. Overwritten on each run.
 
 The file can be used in two ways: starting from a `Spec`-only file with an empty `Corpus` sheet (synthetic mode, run all modules in order), or starting from a file with a pre-populated `Corpus` sheet (real dataset mode, skip Module 1).
 
+# Scenarios
+
+The procedure defines two scenarios, and neither is hard-coded: the scenario is
+determined entirely by the `Proportion` column of the `Spec` sheet, which
+becomes the probability vector `probs_k` used by the random generator in
+Module 3. Use one Excel file per scenario and run the pipeline once for each.
+
+**Scenario A — uniform.** Set `Proportion` to 1/k for every label level (0.5 and
+0.5 in the binary case). Each record receives a label with probability 1/k
+regardless of the label distribution of the gold standard. This is the purest
+chance reference and the most conservative scenario: it answers what performance
+to expect from a classifier assigning labels at random with no knowledge of the
+corpus distribution.
+
+**Scenario B — informed by the gold standard.** Set `Proportion` to the observed
+frequency of each label in the reference coder's classification (for example
+0.118 and 0.882 for a corpus with 11.8% prevalence). Each record receives a
+label with probability proportional to that frequency. This answers what
+performance to expect from a classifier that reproduces the label distribution
+of the gold standard while having no genuine discriminative capacity, and is the
+scenario most directly comparable with real classifiers.
+
+The two files should be identical except for that column, with the same `Corpus`
+sheet in both. Module 2 prints the loaded distribution and the corpus prevalence
+separately, so the scenario in force can be verified before simulating: under
+Scenario B the two coincide, under Scenario A they do not.
+
+**One caveat when generating a synthetic corpus.** `Proportion` then does double
+duty — it fixes the true labels written by Module 1 *and* the simulated labels
+drawn by Module 3. Running Module 1 with a uniform Spec produces a balanced gold
+standard, which is not what Scenario A describes. To test Scenario A on an
+imbalanced corpus, generate the corpus first with the imbalanced Spec, then edit
+`Proportion` to uniform before running Module 3. With a real corpus the question
+does not arise, since Module 1 is bypassed and `Spec` only feeds the simulation.
+
 # Module 0 — Setup & file selection
 
 This module handles all session-level configuration. It installs and loads any missing packages, defines all global parameters (file names, label mappings, iteration count, random seed, and sheet names), and resolves the path to the working Excel file. Path resolution follows a three-step priority: if `EXCEL_PATH` is explicitly set and the file exists, it is used directly; if only `EXCEL_FILE` is provided, the path is built from the `.qmd` directory; if neither is set or the file is not found, a native RStudio file picker dialog opens. All downstream modules consume `EXCEL_PATH` without modification.
-
-
 
 ```{r module-00-setup}
 
@@ -45,7 +77,7 @@ This module handles all session-level configuration. It installs and loads any m
 # Parameters
 # ******************************************
 EXCEL_PATH <- NULL          # "C:/full/path/to/file.xlsx"  |  NULL → resolve below
-EXCEL_FILE <- "ART-760_alfalla19.xlsx"        # "ART760_template.xlsx"            |  NULL → without "" file picker
+EXCEL_FILE <- "ART760_templateN-200.xlsx"        # "ART760_template.xlsx"  "ART760_templateN-200.xlsx"  |  NULL → without "" file picker
 POS_LABELS <- "included"   # label(s) mapped to POSITIVE — use c("a","b") for multiple
 NEG_LABELS <- "excluded"   # label(s) mapped to NEGATIVE — use c("a","b") for multiple
 N_ITER     <- 10000L    # L forces R to save number as integer (more semantic congruence for counters and less memory)
@@ -100,6 +132,22 @@ script_dir <- tryCatch(
 EXCEL_PATH <- .resolve_excel(EXCEL_PATH, EXCEL_FILE, script_dir)
 message("   Working directory: ", script_dir)
 # ******************************************
+
+# ******************************************
+# Spec freezing
+# ******************************************
+# openxlsx preserves formulas but discards their cached values when a workbook
+# is re-saved, so a formula in Spec becomes unreadable in any file this notebook
+# writes. Called before the first save of each path, this replaces the sheet
+# with the literal numbers already held in spec_df; every later save then
+# preserves them, because they are no longer formulas.
+.freeze_spec <- function(wb) {
+  if (exists("spec_df") && SH_SPEC %in% names(wb))
+    openxlsx::writeData(wb, SH_SPEC, spec_df, startRow = 1, colNames = TRUE)
+  invisible(wb)
+}
+# ******************************************
+
 ```
 
 # Module 1 — Synthetic corpus generation
@@ -191,6 +239,7 @@ if (!.skip_m1) {
                           widths = "auto")
 
   synth_path <- sub("\\.xlsx$", "_synthetic.xlsx", EXCEL_PATH, ignore.case = TRUE)
+  .freeze_spec(wb)
   openxlsx::saveWorkbook(wb, synth_path, overwrite = TRUE)
   EXCEL_PATH <- synth_path
   message("✔ Synthetic corpus written to '", basename(EXCEL_PATH), "'")
@@ -198,6 +247,7 @@ if (!.skip_m1) {
 
 }
 ```
+
 # Module 2 — Corpus reading & validation
 
 This module reads the `Corpus` and `Spec` sheets from the working Excel file and prepares all objects required by the simulation and reporting modules. It validates that the mandatory columns (`ID` and `Label`) are present in the corpus, warns about missing optional columns (`Title`, `Abstract`), and checks that all label values can be mapped to the binary positive/negative scheme defined by `POS_LABELS` and `NEG_LABELS` in Module 0. Any unmapped label is flagged with a warning and set to `NA` in `label_bin`. The Spec sheet is also read and validated here, with proportions renormalised if they do not sum exactly to 1. The module closes with a corpus summary showing total items, positive and negative counts with percentages, and the imbalance ratio.
@@ -263,9 +313,26 @@ missing_spec  <- setdiff(required_spec, names(spec_df))
 if (length(missing_spec))
   stop("Spec sheet missing columns: ", paste(missing_spec, collapse = ", "))
 
+# A row with a Label but no Proportion means the value could not be read. The
+# usual cause is a formula: re-saving a workbook keeps the formula but discards
+# its cached result, so the cell comes back empty. Report which rows are affected
+# instead of silently dropping them below.
+.broken <- which(!is.na(spec_df$Label) & is.na(spec_df$Proportion))
+if (length(.broken))
+  stop("Spec sheet: Proportion is empty for ",
+       paste0("'", spec_df$Label[.broken], "' (row ", .broken + 1L, ")",
+              collapse = ", "),
+       ". If those cells contain formulas, replace them with literal numbers — ",
+       "a workbook re-saved by this notebook keeps the formula but loses its ",
+       "cached value. Opening the file in Excel and saving it once also works.")
+rm(.broken)
+
 # Remove empty rows (n_items is only filled in the first row by design)
 spec_df <- spec_df |>
   dplyr::filter(!is.na(Label), !is.na(Proportion))
+
+if (!nrow(spec_df))
+  stop("Spec sheet has no usable rows: Label and Proportion are both empty.")
 
 n_items  <- as.integer(spec_df$n_items[1])
 levels_k <- spec_df$Label
@@ -292,6 +359,7 @@ message("───────────────────────�
 ```
 
 # Module 3 — Monte Carlo simulation
+
 This module generates N_ITER simulated classification vectors for the corpus, using the label distribution defined in the Spec sheet (levels_k and probs_k). Each iteration produces one random classification of all items, stored as a column (iter_0001, iter_0002, …) with ID as the first column. Results are written to the Simulations sheet, overwriting any existing data. If you want to preserve a previous simulation run and proceed directly to Module 4, simply do not execute this chunk.
 
 ```{r module-03-simulate}
@@ -300,28 +368,37 @@ This module generates N_ITER simulated classification vectors for the corpus, us
 # To skip simulation and reuse a previous run: do NOT execute this chunk.
 
 # ******************************************
+# Simulation generator
+# ******************************************
+# Single source of truth for how simulated classifications are generated.
+# Reused by module-05-stability. Do not duplicate this logic elsewhere.
+.simulate_matrix <- function(n_iter, seed,
+                             n_rows = nrow(corpus_df),
+                             lvls   = levels_k,
+                             prob   = probs_k) {
+  set.seed(seed)
+  m <- matrix(
+    sample(lvls, size = n_rows * n_iter, replace = TRUE, prob = prob),
+    nrow = n_rows, ncol = n_iter
+  )
+  colnames(m) <- sprintf("iter_%04d", seq_len(n_iter))
+  m
+}
+# ******************************************
+
+# ******************************************
 # Run simulation
 # ******************************************
-set.seed(SEED)
-
 message("Running ", N_ITER, " iterations × ", nrow(corpus_df), " items…")
 
-.sim_matrix <- matrix(
-  sample(levels_k, size = nrow(corpus_df) * N_ITER,
-         replace = TRUE, prob = probs_k),
-  nrow = nrow(corpus_df),
-  ncol = N_ITER
-)
-
-colnames(.sim_matrix) <- sprintf("iter_%04d", seq_len(N_ITER))
+.sim_matrix <- .simulate_matrix(n_iter = N_ITER, seed = SEED)
 
 sims_df <- tibble::tibble(ID = corpus_df$ID,
-                           as.data.frame(.sim_matrix))
+                          as.data.frame(.sim_matrix))
 rm(.sim_matrix)
 
 message("✔ Simulation complete: ", nrow(sims_df), " items × ",
         N_ITER, " iterations")
-# ******************************************
 
 # ******************************************
 # Write to Excel
@@ -337,13 +414,15 @@ hs <- openxlsx::createStyle(textDecoration = "bold",
                              fgFill = "#FFF2CC", border = "Bottom")
 openxlsx::writeData(wb, SH_SIMS, sims_df, headerStyle = hs)
 
+.freeze_spec(wb)
 openxlsx::saveWorkbook(wb, EXCEL_PATH, overwrite = TRUE)
 message("✔ Simulations written to sheet '", SH_SIMS, "' in ",
         basename(EXCEL_PATH))
 # ******************************************
 ```
 
-# [OPTIONAL] Validation module — Known-case simulation
+# \[OPTIONAL\] Validation module — Known-case simulation
+
 This module is not part of the main pipeline and does not affect any results. It is designed to verify that the metric calculations in Module 4 are correct by constructing four classification vectors with known outcomes: all_positive (every item classified as positive), all_negative (every item classified as negative), perfect (identical to the gold standard), and random_fair (random 50/50 assignment regardless of corpus prevalence). These four vectors overwrite the Simulations sheet and are loaded as sims_df so that Module 4 can be run immediately after without any other change. Run this module, then Module 4, then the Validation check module below.
 
 ```{r validation-known-cases}
@@ -403,16 +482,14 @@ message("  → Now run Module 4 to verify metrics")
 # ******************************************
 ```
 
-
 # Module 4 — Metric computation & reporting
 
 This module computes eight classification metrics — Recall, Specificity, Precision, NPV, F1, F2, Balanced Accuracy, and MCC — for each simulated iteration in `sims_df`. For each iteration, the simulated label vector is binarised into positive/negative using the same mapping defined in Module 0, the confusion matrix is computed against the gold standard `label_bin` from `corpus_df`, and the eight metrics are derived. Degenerate cases where the denominator is zero are handled explicitly and recorded as `NA`. Once all iterations are processed, the empirical distribution of each metric is summarised with mean, median, standard deviation, and a 95% confidence interval computed by the percentile method (2.5th and 97.5th percentiles). The summary table is written to the `Reporting` sheet and stored as `report_df` in the global environment.
 
 ## Interpreting the results
-The output of this module is not a measure of classifier performance — it is the empirical baseline that a random classifier would achieve given the label distribution of the corpus. Two results serve as internal sanity checks: 
-Balanced Accuracy should converge to 0.50 and MCC should converge to 0 as the number of iterations increases, since a random classifier has no discriminative capacity. 
-Deviations from these values in small iteration runs (e.g. 10 iterations) are expected due to sampling variance and will stabilise at 10,000 iterations. 
-The 95% CI quantifies the range within which a random classifier would fall 95% of the time — any real classifier scoring above the upper bound of Recall, F1, or Balanced Accuracy can be considered to beat chance for that metric. The NA percentage reported for F1 and F2 reflects iterations where the simulated classifier assigned no positive labels at all, a degenerate but statistically possible outcome under low-prevalence distributions that disappears with sufficient iterations.
+
+The output of this module is not a measure of classifier performance — it is the empirical baseline that a random classifier would achieve given the label distribution of the corpus. Two results serve as internal sanity checks: Balanced Accuracy should converge to 0.50 and MCC should converge to 0 as the number of iterations increases, since a random classifier has no discriminative capacity. Deviations from these values in small iteration runs (e.g. 10 iterations) are expected due to sampling variance and will stabilise at 10,000 iterations. The 95% CI quantifies the range within which a random classifier would fall 95% of the time — any real classifier scoring above the upper bound of Recall, F1, or Balanced Accuracy can be considered to beat chance for that metric. The NA percentage reported for F1 and F2 reflects iterations where the simulated classifier assigned no positive labels at all, a degenerate but statistically possible outcome under low-prevalence distributions that disappears with sufficient iterations.
+
 ```{r module-04-report}
 # Computes 8 classification metrics for each simulation iteration,
 # then summarises the empirical distribution with mean, median, SD and
@@ -462,6 +539,21 @@ The 95% CI quantifies the range within which a random classifier would fall 95% 
       F1 = f1, F2 = f2, BalancedAccuracy = bal_acc, MCC = mcc)
   })
 }
+
+.metrics_table <- function(pred_cols, truth_vec) {
+  # pred_cols: data frame or list where each element is one prediction vector.
+  # Single source of truth for assembling the per-iteration metrics table.
+  # Reused by module-05-stability.
+  purrr::map(pred_cols, function(x) {
+    .metrics(.confusion(.binarise(x, POS_LABELS, NEG_LABELS), truth_vec))
+  }) |>
+    (\(z) as.data.frame(do.call(rbind, z)))()
+}
+
+# Single source of truth for the percentile-method confidence interval.
+.ci_lo <- function(vals) unname(quantile(vals, 0.025, na.rm = TRUE))
+.ci_hi <- function(vals) unname(quantile(vals, 0.975, na.rm = TRUE))
+
 # ******************************************
 
 # ******************************************
@@ -472,12 +564,7 @@ iter_cols <- setdiff(names(sims_df), "ID")
 
 message("Computing metrics for ", length(iter_cols), " iterations…")
 
-metrics_mat <- purrr::map(iter_cols, function(col) {
-  pred <- .binarise(sims_df[[col]], POS_LABELS, NEG_LABELS)
-  cm   <- .confusion(pred, truth)
-  .metrics(cm)
-}) |>
-  (\(x) as.data.frame(do.call(rbind, x)))()
+metrics_mat <- .metrics_table(sims_df[iter_cols], truth)
 
 message("✔ Metrics computed: ", nrow(metrics_mat), " iterations × ",
         ncol(metrics_mat), " metrics")
@@ -496,8 +583,8 @@ report_df <- purrr::map_dfr(metric_names, function(m) {
     Mean     = mean(vals, na.rm = TRUE),
     Median   = median(vals, na.rm = TRUE),
     SD       = sd(vals, na.rm = TRUE),
-    CI95_Lo  = quantile(vals, 0.025, na.rm = TRUE),
-    CI95_Hi  = quantile(vals, 0.975, na.rm = TRUE),
+    CI95_Lo  = .ci_lo(vals),
+    CI95_Hi  = .ci_hi(vals),
     NA_pct   = round(mean(is.na(vals)) * 100, 1)
   )
 })
@@ -532,8 +619,330 @@ message("✔ Report written to sheet '", SH_REP, "' in ", basename(EXCEL_PATH))
 # ******************************************
 ```
 
+# Module 5 — Iteration-count sufficiency check
 
-# [OPTIONAL] Per-case metric verification
+The default of 10,000 iterations is a convention, not a derivation. This module verifies empirically that it is sufficient for the corpus at hand. The user declares a target precision on the metric scale before running the check — the default of 0.01 follows from the way the bounds are used: they are reported and interpreted to two decimal places, so variation below 0.01 cannot alter any interpretation of the results. The full simulation is then replicated N_REPLICATIONS times with different random seeds and all other parameters unchanged, and for each of the eight metrics the module reports the largest variation in the CI95 upper bound observed between replications. If that variation is below the declared target for every metric, the current N_ITER is sufficient at this corpus size; a metric whose bound is identical across all replications indicates a wide margin of sufficiency. Where the target is not met, increase N_ITER and re-run Modules 3 → 5.
+
+This module requires Modules 0 → 4 to have been executed in the current session: it reuses the metric functions and parameters already in the global environment and does not read the Excel file. Replication 1 uses the same seed as Module 3, so its upper bounds are compared against report_df as an automatic check that the replication engine still reproduces the main pipeline exactly. Because scenarios live in separate Excel files, run this module once per scenario. Runtime scales linearly with N_REPLICATIONS — roughly ten times a single Module 4 run at the default setting.
+
+```{r module-05-stability}
+# Checks whether the iteration count is large enough by replicating the full
+# simulation with different seeds and measuring how far BOTH ends of the CI95
+# move between replications. Also estimates the iteration count that would be
+# needed to reach the declared target precision.
+#
+# REQUIRES Modules 0 -> 4 in the current session. Reuses .simulate_matrix()
+# from Module 3 and .metrics_table(), .ci_lo(), .ci_hi(), metric_names from
+# Module 4. Does not read the Excel file and does not touch sims_df/report_df.
+
+# ******************************************
+# Parameters
+# ******************************************
+N_ITER_CHECK     <- N_ITER   # iterations per replication. Defaults to the main
+                             # experiment. Override with a literal (e.g. 80000L)
+                             # to explore what-if scenarios; when it differs from
+                             # N_ITER the consistency check against report_df is
+                             # skipped, since replication 1 no longer reproduces
+                             # the stored run.
+
+N_REPLICATIONS   <- 10L      # independent replications, each of N_ITER_CHECK
+                             # iterations with a different seed. This is NOT the
+                             # iteration count: N_ITER_CHECK defines the empirical
+                             # distribution, N_REPLICATIONS measures how
+                             # reproducible its bounds are. Cost grows as
+                             # N_REPLICATIONS x N_ITER_CHECK. Keep it fixed if you
+                             # compare Range values across runs: the sufficiency
+                             # estimate below assumes it unchanged.
+
+TARGET_PRECISION <- 0.01     # maximum acceptable spread of a bound across
+                             # replications, on the metric scale. 0.01 = bounds
+                             # are read to two decimals, so anything below this
+                             # cannot change the interpretation.
+# ******************************************
+
+# ******************************************
+# Dependency check
+# ******************************************
+.needed <- c("corpus_df", "levels_k", "probs_k", "N_ITER", "SEED",
+             "metric_names", ".simulate_matrix", ".metrics_table",
+             ".ci_lo", ".ci_hi")
+.absent <- .needed[!vapply(.needed, exists, logical(1))]
+if (length(.absent))
+  stop("Module 5 requires Modules 0-4 to be run first. Missing: ",
+       paste(.absent, collapse = ", "))
+rm(.needed, .absent)
+# ******************************************
+
+# ******************************************
+# Replication engine
+# ******************************************
+# No simulation or metric logic is restated here: generation comes from
+# .simulate_matrix() (Module 3), the metrics table from .metrics_table() and the
+# bounds from .ci_lo()/.ci_hi() (Module 4).
+
+bound_keys <- paste(rep(metric_names, each = 2L),
+                    c("CI95_Lo", "CI95_Hi"), sep = "|")
+
+.row_min <- function(x) if (all(is.na(x))) NA_real_ else min(x, na.rm = TRUE)
+.row_max <- function(x) if (all(is.na(x))) NA_real_ else max(x, na.rm = TRUE)
+
+.bounds_one_run <- function(seed, n_iter) {
+  sim <- .simulate_matrix(n_iter = n_iter, seed = seed)
+
+  # Metrics are computed in blocks of columns so that peak memory stays bounded
+  # when n_iter is large. Blocking cannot affect the result: the whole matrix is
+  # generated in a single call before any metric is computed.
+  blocks <- split(seq_len(n_iter), ceiling(seq_len(n_iter) / 2000L))
+
+  m <- purrr::map(blocks, function(idx)
+        .metrics_table(as.data.frame(sim[, idx, drop = FALSE]),
+                       corpus_df$label_bin)) |>
+       (\(z) do.call(rbind, z))()
+
+  # 2 x 8 matrix flattened column-major, i.e. Lo/Hi paired within each metric.
+  out <- vapply(metric_names,
+                function(nm) c(.ci_lo(m[[nm]]), .ci_hi(m[[nm]])),
+                numeric(2))
+  setNames(as.vector(out), bound_keys)
+}
+# ******************************************
+
+# ******************************************
+# Run replications
+# ******************************************
+# Replication 1 reuses SEED so it reproduces the run reported by Module 4.
+# The remaining seeds are drawn from a stream initialised with SEED itself:
+# widely dispersed rather than consecutive, and fully recoverable from SEED
+# alone, so the whole stability check stays reproducible.
+set.seed(SEED)
+seed_vector <- c(SEED, sample.int(.Machine$integer.max, N_REPLICATIONS - 1L))
+
+message("Replicating the full simulation ", N_REPLICATIONS, " times (",
+        N_ITER_CHECK, " iterations x ", nrow(corpus_df), " items each)...")
+
+bounds_mat <- purrr::map(seq_along(seed_vector), function(r) {
+  t0  <- Sys.time()
+  out <- .bounds_one_run(seed_vector[r], N_ITER_CHECK)
+  message("  replication ", r, "/", N_REPLICATIONS,
+          "  seed = ", seed_vector[r], "  (",
+          round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1), "s)")
+  out
+}) |>
+  (\(x) do.call(cbind, x))()
+
+colnames(bounds_mat) <- sprintf("rep_%02d", seq_len(N_REPLICATIONS))
+# ******************************************
+
+# ******************************************
+# Consistency check against report_df
+# ******************************************
+.comparable <- exists("sims_df") && exists("report_df") &&
+               N_ITER_CHECK == N_ITER &&
+               sum(grepl("^iter_", names(sims_df))) == N_ITER
+
+if (.comparable) {
+  ref <- c(rbind(setNames(report_df$CI95_Lo, report_df$Metric)[metric_names],
+                 setNames(report_df$CI95_Hi, report_df$Metric)[metric_names]))
+  delta <- max(abs(bounds_mat[, 1] - ref), na.rm = TRUE)
+  if (delta < 1e-12) {
+    message("Consistency check passed: replication 1 reproduces both bounds ",
+            "of report_df exactly.")
+  } else {
+    warning("Replication 1 does not reproduce report_df (max abs diff = ",
+            signif(delta, 3), "). Reconcile before reporting these results.")
+  }
+  rm(ref, delta)
+} else if (N_ITER_CHECK != N_ITER) {
+  message("Consistency check skipped: N_ITER_CHECK (", N_ITER_CHECK,
+          ") differs from N_ITER (", N_ITER, ") - what-if mode.")
+} else {
+  message("Consistency check skipped: sims_df was not produced by Module 3.")
+}
+rm(.comparable)
+# ******************************************
+
+# ******************************************
+# Stability table
+# ******************************************
+# Required N follows from the 1/sqrt(N) scaling of percentile sampling error:
+#   N_required = N_current * (Range_observed / Range_target)^2
+# It is an approximation: Range is estimated from N_REPLICATIONS values only,
+# and it assumes N_REPLICATIONS is held constant.
+stability_df <- dplyr::bind_cols(
+  tibble::tibble(
+    Metric = rep(metric_names, each = 2L),
+    Bound  = rep(c("CI95_Lo", "CI95_Hi"), times = length(metric_names))
+  ),
+  tibble::as_tibble(bounds_mat),
+  tibble::tibble(
+    Bound_Min = apply(bounds_mat, 1, .row_min),
+    Bound_Max = apply(bounds_mat, 1, .row_max)
+  )
+) |>
+  dplyr::mutate(
+    Range        = Bound_Max - Bound_Min,
+    Target       = TARGET_PRECISION,
+    Meets_Target = Range < TARGET_PRECISION,
+    N_Required   = ifelse(
+      Meets_Target | is.na(Range) | Range == 0, NA_real_,
+      ceiling(N_ITER_CHECK * (Range / TARGET_PRECISION)^2)
+    )
+  )
+
+message("--- CI95 bound stability across ", N_REPLICATIONS,
+        " replications (", N_ITER_CHECK, " iterations each) ---")
+print(as.data.frame(
+  dplyr::mutate(stability_df,
+                dplyr::across(dplyr::where(is.numeric), ~ round(.x, 4)))
+), row.names = FALSE)
+# ******************************************
+
+# ******************************************
+# Verdict and recommendation
+# ******************************************
+.round_up <- function(x) {
+  k <- 10^(floor(log10(x)) - 1L)
+  ceiling(x / k) * k
+}
+
+.w <- which.max(stability_df$Range)
+message("")
+message("  Target precision       : ", TARGET_PRECISION)
+message("  Largest range observed : ", signif(stability_df$Range[.w], 3),
+        "  (", stability_df$Metric[.w], " ", stability_df$Bound[.w], ")")
+.exact <- stability_df$Range == 0 & !is.na(stability_df$Range)
+if (any(.exact))
+  message("  Identical in all replications: ",
+          paste(stability_df$Metric[.exact], stability_df$Bound[.exact],
+                collapse = ", "))
+
+if (all(stability_df$Meets_Target, na.rm = TRUE)) {
+  message("  ", N_ITER_CHECK,
+          " iterations are sufficient at the declared target precision.")
+  N_SUGGESTED <- N_ITER_CHECK
+} else {
+  .fail <- stability_df[!stability_df$Meets_Target, ]
+  N_SUGGESTED <- .round_up(1.2 * max(.fail$N_Required, na.rm = TRUE))
+  message("  Target not met for: ",
+          paste(.fail$Metric, .fail$Bound, sep = " ", collapse = ", "))
+  message("  Estimated requirement: ",
+          format(max(.fail$N_Required, na.rm = TRUE), big.mark = ",",
+                 scientific = FALSE),
+          " iterations (driven by ", .fail$Metric[which.max(.fail$N_Required)],
+          " ", .fail$Bound[which.max(.fail$N_Required)], ")")
+  message("  Suggested value, 20% margin: N_ITER_CHECK <- ",
+          format(N_SUGGESTED, big.mark = ",", scientific = FALSE), "L")
+  message("  Re-run this chunk with that value to confirm before changing N_ITER.")
+  rm(.fail)
+}
+rm(.exact)
+# ******************************************
+
+# ******************************************
+# Provenance block
+# ******************************************
+# Everything needed to reproduce this check from SEED alone.
+stability_meta <- tibble::tibble(
+  Item = c(
+    "Corpus items", "Positive items", "Prevalence",
+    "Simulation distribution (probs_k)",
+    "Iterations per replication (N_ITER_CHECK)",
+    "Iterations in main experiment (N_ITER)",
+    "Replications (N_REPLICATIONS)", "Target precision",
+    "Base seed (SEED)", "Seed derivation", "Replication seeds",
+    "Largest range observed", "Bound with largest range",
+    "All bounds meet target", "Suggested iterations",
+    "R version", "Run timestamp"
+  ),
+  Value = c(
+    format(nrow(corpus_df)),
+    format(sum(corpus_df$label_bin == "positive", na.rm = TRUE)),
+    format(round(mean(corpus_df$label_bin == "positive", na.rm = TRUE), 4)),
+    paste(levels_k, round(probs_k, 4), sep = "=", collapse = " | "),
+    format(N_ITER_CHECK), format(N_ITER),
+    format(N_REPLICATIONS), format(TARGET_PRECISION), format(SEED),
+    "set.seed(SEED); c(SEED, sample.int(.Machine$integer.max, N_REPLICATIONS - 1))",
+    paste(seed_vector, collapse = ", "),
+    format(signif(stability_df$Range[.w], 3)),
+    paste(stability_df$Metric[.w], stability_df$Bound[.w]),
+    if (all(stability_df$Meets_Target, na.rm = TRUE)) "yes" else "no",
+    format(N_SUGGESTED, big.mark = ",", scientific = FALSE),
+    R.version.string,
+    format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+  )
+)
+
+message("--- Provenance ---")
+print(as.data.frame(stability_meta), row.names = FALSE)
+rm(.w)
+# ******************************************
+```
+
+```{r module-05-save}
+# Writes the provenance block and stability_df to the Stability sheet.
+# Run only if you want them saved. Requires module-05-stability first.
+
+# ******************************************
+# Write Stability to Excel
+# ******************************************
+SH_STAB <- "Stability"
+wb      <- openxlsx::loadWorkbook(EXCEL_PATH)
+
+if (SH_STAB %in% names(wb)) openxlsx::removeWorksheet(wb, SH_STAB)
+openxlsx::addWorksheet(wb, SH_STAB)
+
+hs        <- openxlsx::createStyle(textDecoration = "bold",
+                                   fgFill = "#D9EAD3", border = "Bottom")
+num_style <- openxlsx::createStyle(numFmt = "0.0000")
+int_style <- openxlsx::createStyle(numFmt = "#,##0")
+
+# Provenance first, metric table below it with one blank row in between.
+openxlsx::writeData(wb, SH_STAB, stability_meta, startRow = 1,
+                    headerStyle = hs)
+
+start_stab <- nrow(stability_meta) + 3L
+openxlsx::writeData(wb, SH_STAB, stability_df, startRow = start_stab,
+                    headerStyle = hs)
+
+body_rows <- (start_stab + 1L):(start_stab + nrow(stability_df))
+col_dec    <- which(names(stability_df) %in%
+                      c(colnames(bounds_mat), "Bound_Min", "Bound_Max",
+                        "Range", "Target"))
+col_int    <- which(names(stability_df) == "N_Required")
+
+openxlsx::addStyle(wb, SH_STAB, num_style, rows = body_rows,
+                   cols = col_dec, gridExpand = TRUE)
+openxlsx::addStyle(wb, SH_STAB, int_style, rows = body_rows,
+                   cols = col_int, gridExpand = TRUE)
+openxlsx::setColWidths(wb, SH_STAB,
+                       cols = seq_len(ncol(stability_df)), widths = "auto")
+
+openxlsx::saveWorkbook(wb, EXCEL_PATH, overwrite = TRUE)
+message("Provenance and stability table written to sheet '", SH_STAB,
+        "' in ", basename(EXCEL_PATH))
+# ******************************************
+```
+
+# Output Excel file description
+
+The Excel file acts as both input and output container and is updated in place at the end of each module that writes results. Two exceptions produce a derived file instead of modifying the original: Module 1 saves to \[original\]\_synthetic.xlsx when it generates a corpus, and the heterogeneous-classifiers chunk saves to \[original\]\_hetero.xlsx. In both cases EXCEL_PATH is updated so subsequent modules follow the new file.
+
+By the end of a complete pipeline run the file contains the following sheets:
+
+Spec — Unchanged from the input. Contains the corpus parameters (n_items, Label, Proportion) used to generate the synthetic corpus and to define the simulation distribution.
+
+Corpus — The labelled dataset used as gold standard. Populated either by Module 1 (synthetic generation) or manually by the user. Contains at minimum ID and Label, optionally Title and Abstract.
+
+Simulations — Contains the full Monte Carlo simulation matrix: one row per corpus item, one column per iteration (iter_0001 … iter_N), plus an ID column. Written by Module 3, which overwrites the sheet on every run. If Module 3 is not executed the sheet retains its previous content, which Module 4 reads directly. Two auxiliary chunks also write here, replacing the iteration columns with their own: validation-known-cases writes the four known-outcome vectors, and heterogeneous-classifiers writes one column per simulated reviewer.
+
+Reporting — The empirical baseline summary table, one row per metric. Columns: Metric, Mean, Median, SD, CI95_Lo, CI95_Hi, NA_pct. Written by Module 4 and overwritten on each run.
+
+Inspection (optional) — Written only if the inspection-save chunk is executed. Contains the confusion matrix (TP, TN, FP, FN) and the eight metrics for each column of the current sims_df, labelled by column name. Used to inspect individual iterations or classifiers in detail, and to verify metric calculations against the known-outcome cases.
+
+Stability (optional) — Written only if the module-05-save chunk is executed. Documents that the iteration count used in the main experiment is large enough for this corpus, and does not affect any result reported by Modules 1–4.The sheet holds two blocks.The upper block is a provenance record: corpus size, positive count and prevalence, the label probabilities used to simulate (`probs_k`) — the entry that identifies which scenario produced the file — the iteration count used in the check (`N_ITER_CHECK`) alongside the one used in the main experiment (`N_ITER`), the number of replications, the declared target precision, the base seed, the rule by which the remaining seeds are derived from it, the resulting seed vector, the largest range observed and the bound that produced it, whether every bound met the target, the suggested iteration count, the R version, and a run timestamp.Because the seeds are recoverable from SEED alone, these entries are sufficient to reproduce the whole check. Below it, separated by a blank row, sits the stability table: sixteen rows, one for each combination of the eight metrics and the two ends of the confidence interval, identified by the Metric and Bound columns. For each row the sheet records the bound obtained in every replication (rep_01 … rep_K), its minimum and maximum across replications (Bound_Min, Bound_Max), the resulting Range, the declared Target, a logical Meets_Target, and N_Required — the iteration count that would be needed to bring that bound within target, estimated from the 1/√N scaling of percentile sampling error and left empty where the target is already met. A Range of exactly zero indicates a bound that was identical in every replication, which points to a wide margin of sufficiency rather than to a borderline result.
+
+# \[OPTIONAL\] Per-case metric verification
+
 This module is not part of the main pipeline. It reads metrics_mat and sims_df produced by the most recent Module 4 run and displays the confusion matrix (TP, TN, FP, FN) and eight metrics for each classifier or iteration, labelled by column name. Although it is designed to be run after the validation module to verify known-outcome cases, it works after any Module 4 execution and can be used to inspect individual classifier results in detail. To save the inspection table to the Excel file, run the inspection-save chunk afterwards.
 
 ```{r inspection}
@@ -606,7 +1015,8 @@ message("───────────────────────�
 
 ```
 
-# [OPTIONAL] SAVE results in excel Per-case metric verification- 
+# \[OPTIONAL\] SAVE results in excel Per-case metric verification-
+
 ```{r inspection-save-to-excel}
 # Writes the inspection table to the Inspection sheet in the Excel file.
 # Only run this chunk if you want to save the inspection results to Excel.
@@ -639,21 +1049,11 @@ message("✔ Inspection table written to sheet '", SH_INS, "' in ",
 # ******************************************
 ```
 
+# \[OPTIONAL\] EXTRA Heterogeneous classifiers module
 
-# Output Excel file description
-The output Excel file shares the same structure as the input file and is updated in place at the end of each module. By the end of a complete pipeline run it contains the following sheets:
-Spec — Unchanged from the input. Contains the corpus parameters used to generate the synthetic corpus and define the simulation distribution.
-Corpus — The labelled dataset used as gold standard. Populated either by Module 1 (synthetic generation) or manually by the user. Contains at minimum ID and Label, optionally Title and Abstract.
-Simulations — Contains the full Monte Carlo simulation matrix: one row per corpus item, one column per iteration (iter_0001 … iter_N), plus an ID column. Written by Module 3. If Module 3 is skipped this sheet retains its previous content, which Module 4 reads directly.
-Reporting — Contains the empirical baseline summary table, one row per metric. Columns: Metric, Mean, Median, SD, CI95_Lo, CI95_Hi, NA_pct. Written by Module 4 and overwritten on each run.
-Validation (optional) — Written only if the validation check chunk is executed. Contains the per-case metric results for the four known-outcome vectors, used to verify the correctness of the metric calculations before applying the procedure to real data.
-
-# [OPTIONAL] EXTRA Heterogeneous classifiers module
 This module is not part of the main pipeline. It generates a synthetic dataset of heterogeneous classifiers simulating human reviewers with different labelling biases, and is intended for testing and exploratory analysis. Each classifier is represented as a column in the Simulations sheet, where each cell contains the label assigned by that classifier to each corpus item.Classifiers are generated under two modes controlled by PROFILE. In "fixed" mode, classifiers are distributed across six predefined bias profiles: lenient (tends to assign positive), strict (tends to assign negative), random (pure 50/50), prevalence (mirrors corpus prevalence), biased_pos (strong positive bias) and biased_neg (strong negative bias). In "random" mode, each classifier receives a randomly drawn positive assignment probability within P_POS_RANGE, producing a continuous spectrum of reviewer biases. The number of classifiers is controlled by N_CLASSIFIERS.
 
-Start with module 
-then this module checks whether corpus_df already exists in the environment and matches the Spec before proceeding, preventing silent use of a stale corpus from a previous run. If the Corpus sheet is empty it generates a synthetic corpus from Spec using the same logic as Module 1. Results are saved to a new file with the suffix _hetero.xlsx to preserve the original, and EXCEL_PATH is updated accordingly.
-After this module, proceed directly to Module 4 — Modules 1, 2 and 3 will auto-bypass.
+Start with module then this module checks whether corpus_df already exists in the environment and matches the Spec before proceeding, preventing silent use of a stale corpus from a previous run. If the Corpus sheet is empty it generates a synthetic corpus from Spec using the same logic as Module 1. Results are saved to a new file with the suffix \_hetero.xlsx to preserve the original, and EXCEL_PATH is updated accordingly. After this module, proceed directly to Module 4 — Modules 1, 2 and 3 will auto-bypass.
 
 ```{r heterogeneous-classifiers}
 # Generates a synthetic dataset of heterogeneous classifiers simulating human
