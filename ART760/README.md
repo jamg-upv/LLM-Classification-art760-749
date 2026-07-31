@@ -60,6 +60,8 @@ labels and the simulated ones. To test Scenario A on an imbalanced corpus,
 generate the corpus with the imbalanced Spec first, then set `Proportion` to
 uniform before running Module 3. This does not arise with a real corpus, where
 Module 1 is bypassed.
+
+
 ---
 
 ## Repository contents
