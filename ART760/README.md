@@ -1,5 +1,6 @@
 # ART-760: Does the classifier beat chance?
-**Version:** 1.0.0 (`art760/v1.0.0`) · [Changelog](CHANGELOG.md)
+## Version
+Current: `v1.1.0` — see [CHANGELOG](CHANGELOG.md) for history.
 
 **A Monte Carlo simulation procedure for the empirical estimation of performance baselines in imbalanced datasets**
 
@@ -60,6 +61,8 @@ The pipeline is implemented as a Quarto notebook (`.qmd`) with one chunk per mod
 | 2 | `module-02-read-validate` | Corpus and Spec reading, label validation, binarisation |
 | 3 | `module-03-simulate` | Monte Carlo simulation — overwrites Simulations sheet |
 | 4 | `module-04-report` | Metric computation and empirical summary — writes to Reporting sheet |
+| 5 | `module-05-stability` | Iteration-sufficiency check — replicates the simulation with independent seeds, reports the movement of both CI95 bounds and estimates the iteration count required to meet a declared target precision. Requires Modules 0–4 in the same session |
+
 
 ### Additional chunks (not part of main pipeline)
 
@@ -69,6 +72,7 @@ The pipeline is implemented as a Quarto notebook (`.qmd`) with one chunk per mod
 | `validation-known-cases` | Builds four known-outcome vectors (all positive, all negative, perfect, random 50/50) to verify metric calculations |
 | `inspection` | Displays confusion matrix and 8 metrics per classifier/iteration for the most recent Module 4 run |
 | `inspection-save` | Writes the inspection table to the Excel file — run optionally after `inspection` |
+| `module-05-save` | Writes the provenance block and stability table to the `Stability` sheet — run optionally after `module-05-stability` |
 
 ---
 
@@ -84,6 +88,7 @@ The pipeline uses a single Excel file as both input and output container. One fi
 | `Reporting` | Empirical baseline summary: mean, median, SD, CI95 per metric | Module 4 |
 | `Inspection` | Per-classifier confusion matrix and metrics (optional) | `inspection-save` chunk |
 | `Validation` | Known-case validation results (optional) | `validation-check` chunk |
+| `Stability` | Provenance block and iteration-sufficiency table (optional) | `module-05-save` chunk |
 
 The file can be used in two ways:
 - **Synthetic mode**: start from a `Spec`-only file, run all modules in order
@@ -117,7 +122,28 @@ Two values serve as internal sanity checks:
 - **MCC** should converge to **0**
 
 as the number of iterations increases, since a random classifier has no discriminative capacity. The 95% CI quantifies the range within which a random classifier would fall 95% of the time. Any real classifier scoring above the upper bound of a metric can be considered to beat chance for that metric.
+---
 
+## Iteration count and reproducibility
+
+The default of 10,000 iterations is a convention, not a derivation. Module 5
+verifies it empirically for the corpus at hand: the user declares a target
+precision on the metric scale, the full simulation is replicated with
+independent seeds, and the largest movement of each confidence bound across
+replications is compared against that target. The default target of 0.01
+follows from how the bounds are used — they are reported and interpreted to two
+decimal places, so variation below 0.01 cannot alter any interpretation.
+
+Where a bound fails the target, the module estimates the iteration count that
+would satisfy it from the 1/√N scaling of percentile sampling error, so the
+adjustment does not require trial and error. The `N_ITER_CHECK` parameter
+allows candidate values to be tested before `N_ITER` is changed.
+
+Replication 1 reuses `SEED`, so its bounds must reproduce those already stored
+in `Reporting`; the module checks this automatically. The remaining seeds are
+drawn from a stream initialised with `SEED`, which means the entire check is
+reproducible from the base seed alone. Because scenarios live in separate Excel
+files, run Module 5 once per scenario.
 ---
 
 ## Requirements
@@ -141,6 +167,8 @@ openxlsx, dplyr, purrr, tibble, rstudioapi
 3. Set `POS_LABELS` and `NEG_LABELS` to match your corpus label values
 4. Run modules sequentially: **0 → 1 → 2 → 3 → 4**
 5. Results are written to the `Reporting` sheet of the Excel file
+6. Optionally run `module-05-stability` to confirm that the iteration count is
+   sufficient for your corpus, and `module-05-save` to record the result
 
 To use a real dataset, populate the `Corpus` sheet manually and skip Module 1.
 
@@ -167,7 +195,12 @@ The procedure has been validated on a systematic review corpus of 593 references
 
 ## Supplementary material
 
-A Python/Jupyter equivalent implementation is available as supplementary material. It provides identical functionality using `pandas`, `numpy`, and `openpyxl`.
+A Python/Jupyter equivalent implementation is available as supplementary
+material, using `pandas`, `numpy` and `openpyxl`. Both implementations are at
+feature parity and cover Modules 0–5. Because R and NumPy use different
+random-number streams, the two notebooks do not reproduce each other value by
+value under the same seed; what is comparable is the verdict of the
+sufficiency check, not the individual replication bounds.
 
 ---
 
