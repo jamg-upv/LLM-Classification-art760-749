@@ -170,6 +170,7 @@ Two values serve as internal sanity checks:
 - **MCC** should converge to **0**
 
 as the number of iterations increases, since a random classifier has no discriminative capacity. The 95% CI quantifies the range within which a random classifier would fall 95% of the time. Any real classifier scoring above the upper bound of a metric can be considered to beat chance for that metric.
+
 ---
 
 ## Iteration count and reproducibility
@@ -192,6 +193,7 @@ in `Reporting`; the module checks this automatically. The remaining seeds are
 drawn from a stream initialised with `SEED`, which means the entire check is
 reproducible from the base seed alone. Because scenarios live in separate Excel
 files, run Module 5 once per scenario.
+
 ---
 
 ## Requirements
