@@ -22,38 +22,15 @@ The file can be used in two ways: starting from a `Spec`-only file with an empty
 
 # Scenarios
 
-The procedure defines two scenarios, and neither is hard-coded: the scenario is
-determined entirely by the `Proportion` column of the `Spec` sheet, which
-becomes the probability vector `probs_k` used by the random generator in
-Module 3. Use one Excel file per scenario and run the pipeline once for each.
+The procedure defines two scenarios, and neither is hard-coded: the scenario is determined entirely by the `Proportion` column of the `Spec` sheet, which becomes the probability vector `probs_k` used by the random generator in Module 3. Use one Excel file per scenario and run the pipeline once for each.
 
-**Scenario A — uniform.** Set `Proportion` to 1/k for every label level (0.5 and
-0.5 in the binary case). Each record receives a label with probability 1/k
-regardless of the label distribution of the gold standard. This is the purest
-chance reference and the most conservative scenario: it answers what performance
-to expect from a classifier assigning labels at random with no knowledge of the
-corpus distribution.
+**Scenario A — uniform.** Set `Proportion` to 1/k for every label level (0.5 and 0.5 in the binary case). Each record receives a label with probability 1/k regardless of the label distribution of the gold standard. This is the purest chance reference and the most conservative scenario: it answers what performance to expect from a classifier assigning labels at random with no knowledge of the corpus distribution.
 
-**Scenario B — informed by the gold standard.** Set `Proportion` to the observed
-frequency of each label in the reference coder's classification (for example
-0.118 and 0.882 for a corpus with 11.8% prevalence). Each record receives a
-label with probability proportional to that frequency. This answers what
-performance to expect from a classifier that reproduces the label distribution
-of the gold standard while having no genuine discriminative capacity, and is the
-scenario most directly comparable with real classifiers.
+**Scenario B — informed by the gold standard.** Set `Proportion` to the observed frequency of each label in the reference coder's classification (for example 0.118 and 0.882 for a corpus with 11.8% prevalence). Each record receives a label with probability proportional to that frequency. This answers what performance to expect from a classifier that reproduces the label distribution of the gold standard while having no genuine discriminative capacity, and is the scenario most directly comparable with real classifiers.
 
-The two files should be identical except for that column, with the same `Corpus`
-sheet in both. Module 2 prints the loaded distribution and the corpus prevalence
-separately, so the scenario in force can be verified before simulating: under
-Scenario B the two coincide, under Scenario A they do not.
+The two files should be identical except for that column, with the same `Corpus` sheet in both. Module 2 prints the loaded distribution and the corpus prevalence separately, so the scenario in force can be verified before simulating: under Scenario B the two coincide, under Scenario A they do not.
 
-**One caveat when generating a synthetic corpus.** `Proportion` then does double
-duty — it fixes the true labels written by Module 1 *and* the simulated labels
-drawn by Module 3. Running Module 1 with a uniform Spec produces a balanced gold
-standard, which is not what Scenario A describes. To test Scenario A on an
-imbalanced corpus, generate the corpus first with the imbalanced Spec, then edit
-`Proportion` to uniform before running Module 3. With a real corpus the question
-does not arise, since Module 1 is bypassed and `Spec` only feeds the simulation.
+**One caveat when generating a synthetic corpus.** `Proportion` then does double duty — it fixes the true labels written by Module 1 *and* the simulated labels drawn by Module 3. Running Module 1 with a uniform Spec produces a balanced gold standard, which is not what Scenario A describes. To test Scenario A on an imbalanced corpus, generate the corpus first with the imbalanced Spec, then edit `Proportion` to uniform before running Module 3. With a real corpus the question does not arise, since Module 1 is bypassed and `Spec` only feeds the simulation.
 
 # Module 0 — Setup & file selection
 
@@ -361,6 +338,15 @@ message("───────────────────────�
 # Module 3 — Monte Carlo simulation
 
 This module generates N_ITER simulated classification vectors for the corpus, using the label distribution defined in the Spec sheet (levels_k and probs_k). Each iteration produces one random classification of all items, stored as a column (iter_0001, iter_0002, …) with ID as the first column. Results are written to the Simulations sheet, overwriting any existing data. If you want to preserve a previous simulation run and proceed directly to Module 4, simply do not execute this chunk.
+
+Sampling model (documentation)
+The sampling model is defined by the call sample(lvls, size = n_rows * n_iter, replace = TRUE, prob = prob). With replace = TRUE and a fixed probability vector, every cell of the matrix is drawn independently, with no constraint on how many positive labels occur in a given iteration. The number of positives per iteration is therefore a random variable, not a fixed quantity.
+
+This is deliberate. Drawing a fixed number of positive labels without replacement and permuting them across records would define a hypergeometric model instead, whose dispersion carries a finite population correction. The analytic expressions used to interpret the results assume the Bernoulli model implemented here. The draw is performed in a single call for the whole matrix, so draws are independent both across records (within an iteration) and across iterations.
+
+When lvls has more than two levels, each draw is categorical rather than Bernoulli. After the binarisation applied in Module 2, the outcome is Bernoulli with probability equal to the sum of the probabilities of the categories mapped to the positive group. In the example corpus lvls has two levels, so the draw is Bernoulli directly.
+
+This has a consequence for the metrics. Recall is computed over the m gold standard positives, which are fixed by the corpus. Under this model the number of true positives is Binomial(m, q), where q is the probability of the positive label in the active scenario, so the standard deviation of recall under chance is sqrt(q * (1 - q) / m). Dispersion is governed by m rather than by the total number of records.
 
 ```{r module-03-simulate}
 # Generates N_ITER simulated classification vectors and writes them to the
