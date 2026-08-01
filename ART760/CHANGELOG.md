@@ -27,6 +27,9 @@ Versions follow the `art760/vX.Y.Z` tag convention described in the root README.
   implementations at feature parity.
 - Simulation distribution (`probs_k`) recorded in the provenance block, so a
   saved results file documents which scenario produced it.
+- Worked examples: 200-item synthetic corpus under both scenarios, with the
+  results of a complete run, plus a Scenario B run from each implementation for
+  cross-comparison.
 
 ### Changed
 - Modules 3 and 4 refactored to expose the pipeline internals as named
@@ -37,6 +40,7 @@ Versions follow the `art760/vX.Y.Z` tag convention described in the root README.
 - Seeds for replications 2..K are now drawn from a stream initialised with
   `SEED` rather than taken as consecutive integers. Dispersed across the integer
   range, still fully recoverable from `SEED`.
+- Notebook and example filenames normalised: single `ART760` prefix, no spaces.
 
 ### Fixed
 - Excel documentation referred to a `Validation` sheet that the notebook never
