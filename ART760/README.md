@@ -64,14 +64,37 @@ Module 1 is bypassed.
 
 ---
 
+---
+
 ## Repository contents
 
-```
-ART-760/
-├── ART-760 baseline class.qmd       # Main Quarto notebook — full pipeline
-├── ART760_template.xlsx       # Blank Excel template to get started
-└── README.md
-```
+### Notebooks
+
+| File | Description |
+|------|-------------|
+| `ART760_baseline_class.qmd` | Reference implementation. Quarto notebook for R/RStudio, Modules 0–5 |
+| `ART760_baseline_class.ipynb` | Python/Jupyter equivalent, supplementary material |
+
+### Templates and example data
+
+| File | Role |
+|------|------|
+| `ART760_template.xlsx` | Blank template. Empty sheets and a `Spec` to fill in — the starting point for a new analysis |
+| `ART760_templateN-200_synthetic-A.xlsx` | Worked example, 200-item synthetic corpus, Scenario A. Ready to run |
+| `ART760_templateN-200_synthetic-B.xlsx` | Same corpus, Scenario B. Ready to run |
+| `ART760_templateN-200_synthetic-A-R.xlsx` | Scenario A after a complete run of the R notebook |
+| `ART760_templateN-200_synthetic-B-R.xlsx` | Scenario B after a complete run of the R notebook |
+| `ART760_templateN-200_synthetic-B-Py.xlsx` | Scenario B after a complete run of the Python notebook |
+| `ART760_scenarioA_alfalla593.xlsx` | Real validation corpus (Alfalla-Luque et al., 2023), Scenario A, with results |
+| `ART760_scenarioB_alfalla593.xlsx` | Same corpus, Scenario B, with results |
+
+The 200-item synthetic files exist so the procedure can be run end to end without
+access to any real dataset, and are what the notebooks point to by default. The
+`-R` and `-Py` pair for Scenario B allows the two implementations to be compared
+on identical input; the comparison is provided for Scenario B only. The two implementations do not reproduce
+each other value by value — R and NumPy use different random-number streams — so
+what is comparable is the verdict of the sufficiency check and the order of
+magnitude of each bound, not the individual figures.
 
 ---
 
@@ -187,7 +210,9 @@ openxlsx, dplyr, purrr, tibble, rstudioapi
 
 ## Quick start
 
-1. Open `ART-760 baseline class.qmd` in RStudio
+1. Open `ART760_baseline_class.qmd` in RStudio. To follow the worked example,
+   point it at `ART760_synthN200_scenarioB.xlsx`; to start a new analysis, copy
+   `ART760_template.xlsx` and fill in the `Spec` sheet
 2. Set `EXCEL_PATH` and `EXCEL_FILE` in Module 0, or leave both `NULL` to use the file picker
 3. Set `POS_LABELS` and `NEG_LABELS` to match your corpus label values
 4. Run modules sequentially: **0 → 1 → 2 → 3 → 4**
