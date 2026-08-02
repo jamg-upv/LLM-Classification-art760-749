@@ -121,6 +121,7 @@ The pipeline is implemented as a Quarto notebook (`.qmd`) with one chunk per mod
 | `inspection` | Displays confusion matrix and 8 metrics per classifier/iteration for the most recent Module 4 run |
 | `inspection-save` | Writes the inspection table to the Excel file — run optionally after `inspection` |
 | `module-05-save` | Writes the provenance block and stability table to the `Stability` sheet — run optionally after `module-05-stability` |
+| `metric-distributions` | *Optional.* Plots the empirical distribution of each metric with its percentile bounds, for one or several files at once. Reads the `Inspection` sheet of each file; recomputes nothing and reads nothing from the environment |
 
 ---
 
@@ -134,7 +135,7 @@ The pipeline uses a single Excel file as both input and output container. One fi
 | `Corpus` | Gold standard dataset: `ID`, `Label` (+ optional `Title`, `Abstract`) | Module 1 or user |
 | `Simulations` | Monte Carlo simulation matrix: `ID` + one column per iteration | Module 3 |
 | `Reporting` | Empirical baseline summary: mean, median, SD, CI95 per metric | Module 4 |
-| `Inspection` | Per-classifier confusion matrix and metrics (optional) | `inspection-save` chunk |
+| `Inspection` | Per-iteration confusion matrix and metrics (optional). Required input for the `metric-distributions` chunk | `inspection-save` chunk |
 | `Validation` | Known-case validation results (optional) | `validation-check` chunk |
 | `Stability` | Provenance block and iteration-sufficiency table (optional) | `module-05-save` chunk |
 
@@ -173,6 +174,28 @@ as the number of iterations increases, since a random classifier has no discrimi
 
 ---
 
+## Distribution shape
+
+The summary table reports each interval by its two bounds, which says nothing
+about the shape of the distribution they delimit. The optional
+`metric-distributions` chunk plots that shape and quantifies its asymmetry: for
+every file and metric it records the distance from the median to each bound and
+their ratio, where a ratio near one indicates a symmetric interval and departures
+from it measure the skew.
+
+Two aspects of the plot follow from the data rather than being fixed. Metrics
+whose simulated values fall on a lattice — Recall can only take as many values as
+there are positive items, plus one — are drawn one bar per observed level, since
+binning a lattice into a smooth curve would imply a continuity the metric does not
+have. Bin edges are computed across all files together and the vertical axis is
+relative frequency, so files run with different iteration counts remain
+comparable. With a single file the interval is shown as a shaded region with grey
+tails; with several, each file takes its own colour and its own pair of percentile
+lines, laid out in one panel per metric or one row per file according to the
+`LAYOUT` parameter.
+
+---
+
 ## Iteration count and reproducibility
 
 The default of 10,000 iterations is a convention, not a derivation. Module 5
@@ -205,7 +228,8 @@ files, run Module 5 once per scenario.
 R packages (auto-installed by Module 0 if missing):
 
 ```r
-openxlsx, dplyr, purrr, tibble, rstudioapi
+openxlsx, dplyr, purrr, tibble, rstudioapi, ggplot2, tidyr
+
 ```
 
 ---
@@ -221,6 +245,8 @@ openxlsx, dplyr, purrr, tibble, rstudioapi
 5. Results are written to the `Reporting` sheet of the Excel file
 6. Optionally run `module-05-stability` to confirm that the iteration count is
    sufficient for your corpus, and `module-05-save` to record the result
+7. To inspect the shape of the distributions, run `inspection` and
+   `inspection-save` on each file you want to plot, then `metric-distributions`
 
 To use a real dataset, populate the `Corpus` sheet manually and skip Module 1.
 
@@ -242,6 +268,7 @@ Before applying the procedure to real data, run the `validation-known-cases` chu
 ## Reference corpus (Alfalla-Luque et al., 2023)
 
 The procedure has been validated on a systematic review corpus of 593 references (70 positives, 523 negatives; prevalence = 11.8%), which represents a typical highly imbalanced screening scenario in operations management research.
+Alfalla-Luque, R., Luján García, D. E., & Marin-Garcia, J. A. (2023). Supply chain agility and performance: Evidence from a meta-analysis. International Journal of Operations & Production Management, 43(10), 1587–1633. https://doi.org/10.1108/ijopm-05-2022-0316
 
 ---
 
