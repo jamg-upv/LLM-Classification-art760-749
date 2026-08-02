@@ -3,6 +3,14 @@
 All notable changes to this subproject.
 Versions follow the `art760/vX.Y.Z` tag convention described in the root README.
 
+## [1.2.0] – 2026-08-02
+
+### Added
+- Optional `metric-distributions` chunk: plots the empirical distribution of each
+  metric with its 2.5th and 97.5th percentiles, for one or several Excel files at
+  once. Reads the `Inspection` sheet of each file and recomputes nothing, so it is
+  indifferent to the iteration count of the run that produced it.
+
 
 ## [1.1.0] – 2026-07-31
 
