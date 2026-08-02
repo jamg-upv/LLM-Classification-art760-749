@@ -1250,3 +1250,473 @@ message("✔ Simulations written to '", basename(EXCEL_PATH),
         "' — original preserved — proceed to Module 4")
 # ******************************************
 ```
+# \[OPTIONAL] Module 6 — Empirical metric distributions
+
+This module is not part of the main pipeline and reads nothing from the global environment. It plots the full simulated distribution of each metric, with the 2.5th and 97.5th percentiles marked, for one or several Excel files at once. Its only input is the Inspection sheet, which holds one row per simulated classifier and the eight metrics already computed for it. That sheet is written by the optional inspection-save chunk, so it will not exist unless it has been produced deliberately for the file in question.
+
+Nothing is recomputed here. If the sheet is absent, empty, or missing metric columns, the module lists every offending file and stops, leaving it to the user to run Modules 0 → 4 followed by the inspection chunks on those files. The number of rows is read as found, so the module is indifferent to the iteration count used in the run that produced it, and to whether the same count was used in every file.
+
+Two display decisions adapt to the data rather than being fixed. A metric whose simulated values take few distinct levels — Recall on a corpus with a small positive count can only take as many values as there are positives, plus one — is drawn as one bar per observed level, because binning a lattice into a smooth curve would suggest a continuity the metric does not have. A metric with many distinct values is drawn as a conventional histogram. Bin edges are computed over all files combined so that bars are comparable across series, and the vertical axis is relative frequency rather than count so that files run with different iteration counts can be overlaid.
+
+With a single file, the bars inside the 95% interval are coloured and the two tails are grey, which makes the interval readable as a region rather than as two lines requiring interpretation. With several files the tails cannot be greyed without ambiguity, so each file gets its own colour at partial opacity and its own pair of dashed percentile lines. The LAYOUT parameter switches between overlaying the files in one panel per metric and giving each file its own row of panels.
+
+Besides the figure the module leaves dist_summary_df in the environment: one row per file and metric with the number of iterations, the count of distinct values, mean, median, the two percentile bounds, the distance from the median to each bound, and their ratio. A ratio near one means a symmetric interval; departures from one quantify the asymmetry that the figure shows qualitatively.
+
+```{r Empirical metric distributions graphic}
+# Plots the empirical distribution of each metric from the Inspection sheet of
+# one or more Excel files, with the 2.5th and 97.5th percentiles marked.
+#
+# Standalone: requires no object from Modules 0-5 and reads no other sheet.
+# Never recomputes metrics. If the Inspection sheet is missing or incomplete,
+# the module reports which files are affected and stops.
+
+# ******************************************
+# PARAMETERS
+# ******************************************
+SCENARIO_FILES <- c(
+  "Scenario A"    = "ART760_scenarioA_alfalla593.xlsx",
+  "Scenario B" = "ART760_scenarioB_alfalla593.xlsx"
+)
+# Named character vector, one entry per file. Names become the legend labels;
+# values are bare file names (resolved against the .qmd directory) or full
+# paths. One entry is valid. Set to NULL to select files interactively, one at
+# a time, cancelling the dialog to finish.
+
+SH_INSPECT <- "Inspection"   # sheet holding the per-classifier metrics
+
+METRIC_NAMES <- c("Recall", "Specificity", "Precision", "NPV",
+                  "F1", "F2", "BalancedAccuracy", "MCC")
+# Subset this vector to plot fewer panels.
+
+MAX_DISCRETE_LEVELS <- 60L   # at most this many distinct values -> one bar per value
+BINS                <- 50L   # bins used for metrics above that limit
+
+LAYOUT     <- "overlay"      # "overlay" -> all files in one panel per metric
+                             # "grid"    -> one row per file, one column per metric
+PLOT_NCOL  <- 2L             # panel columns; "overlay" layout only
+FILL_ALPHA <- 0.45           # bar opacity when more than one file is plotted
+
+SAVE_PLOT   <- TRUE
+PLOT_DIR    <- NULL          # NULL -> directory of the first file
+PLOT_FILE   <- "ART760_metric_distributions"   # extension added automatically
+PLOT_WIDTH  <- 9             # inches
+PLOT_HEIGHT <- 11            # inches
+PLOT_DPI    <- 300L
+
+SAVE_TABLE <- TRUE     # write the summary as .xlsx next to the figure
+TABLE_FILE <- "ART760_metric_distributions_summary"
+COPY_TABLE <- TRUE     # also place it on the clipboard as tab-separated text
+# ******************************************
+
+# ******************************************
+# Packages
+# ******************************************
+if (!exists(".ensure_packages")) {
+  .ensure_packages <- function(pkgs) {
+    missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+    if (length(missing)) install.packages(missing, repos = "https://cloud.r-project.org")
+    invisible(lapply(pkgs, library, character.only = TRUE))
+  }
+}
+
+.ensure_packages(c(
+  "openxlsx",    # read the Inspection sheet
+  "dplyr",       # data wrangling
+  "tidyr",       # pivot_longer for the percentile line table
+  "purrr",       # map over files and metrics
+  "tibble",      # tidy result tables
+  "ggplot2",     # plotting
+  "rstudioapi"   # interactive file selection and .qmd path
+))
+# ******************************************
+
+# ******************************************
+# Colours
+# ******************************************
+# Fixed categorical order, never cycled. Grey is reserved for the tails of the
+# single-file layout and is not used as a series colour.
+SERIES_COLS <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                 "#e87ba4", "#008300", "#4a3aa7", "#e34948")
+TAIL_COL    <- "#b4b2a9"
+# ******************************************
+
+# ******************************************
+# Helper functions
+# ******************************************
+# Percentile-method bounds. Defaults match quantile type 7, which is also what
+# Module 4 uses, so the cuts drawn here reproduce those in the Reporting sheet.
+.ci_lo <- function(vals) unname(quantile(vals, 0.025, na.rm = TRUE))
+.ci_hi <- function(vals) unname(quantile(vals, 0.975, na.rm = TRUE))
+
+.qmd_dir <- function() {
+  d <- tryCatch(dirname(rstudioapi::getSourceEditorContext()$path),
+                error = function(e) NA_character_)
+  if (is.na(d) || !nzchar(d)) getwd() else d
+}
+
+# Interactive selection. selectFile() has no multi-select, so it is called
+# repeatedly until the user cancels.
+.pick_inspection_files <- function(dir) {
+  picked <- character(0)
+  repeat {
+    f <- tryCatch(
+      rstudioapi::selectFile(caption = "Select a file (Cancel to finish)",
+                             path = dir, filter = "Excel files (*.xlsx)"),
+      error = function(e) NULL
+    )
+    if (is.null(f) || !nzchar(f)) break
+    picked <- c(picked, f)
+  }
+  if (!length(picked)) stop("No files selected.")
+  stats::setNames(picked, tools::file_path_sans_ext(basename(picked)))
+}
+
+# Resolve each entry to an absolute path; NA marks a file that was not found.
+# Labels fall back to the file name whenever a name is missing or blank.
+.resolve_files <- function(files, dir) {
+  vals <- unname(files)
+  labs <- names(files)
+  if (is.null(labs)) labs <- rep("", length(vals))
+
+  paths <- purrr::map_chr(vals, function(f) {
+    if (file.exists(f))                 return(normalizePath(f, winslash = "/"))
+    cand <- file.path(dir, f)
+    if (file.exists(cand))              return(normalizePath(cand, winslash = "/"))
+    NA_character_
+  })
+
+  labs <- purrr::map2_chr(labs, vals, function(l, v) {
+    if (is.na(l) || !nzchar(l)) tools::file_path_sans_ext(basename(v)) else l
+  })
+
+  stats::setNames(paths, labs)
+}
+
+# Read one file, returning either its data or a description of what is wrong.
+.read_inspection <- function(path, label) {
+  if (is.na(path))
+    return(list(label = label, error = "file not found"))
+
+  sheets <- tryCatch(openxlsx::getSheetNames(path), error = function(e) character(0))
+  if (!SH_INSPECT %in% sheets)
+    return(list(label = label, error = paste0("no '", SH_INSPECT, "' sheet")))
+
+  df <- tryCatch(openxlsx::read.xlsx(path, sheet = SH_INSPECT),
+                 error = function(e) NULL)
+  if (is.null(df) || !nrow(df))
+    return(list(label = label, error = paste0("'", SH_INSPECT, "' sheet is empty")))
+
+  absent <- setdiff(METRIC_NAMES, names(df))
+  if (length(absent))
+    return(list(label = label,
+                error = paste0("missing metric columns: ",
+                               paste(absent, collapse = ", "))))
+
+  list(label = label, path = path, data = df, error = NA_character_)
+}
+
+# Bin definition for one metric, shared by every file so bars stay comparable.
+# A metric with few distinct values is drawn on its own lattice; the bar width
+# uses the median gap, which is robust to an irregular step when the support of
+# two files does not coincide exactly.
+.bin_spec <- function(vals) {
+  u <- sort(unique(round(vals, 10)))
+  if (length(u) <= MAX_DISCRETE_LEVELS) {
+    w <- if (length(u) > 1) stats::median(diff(u)) else 0.01
+    return(list(mode = "discrete", breaks = NULL, centres = u, width = w))
+  }
+  rng <- range(vals)
+  brk <- seq(rng[1], rng[2], length.out = BINS + 1L)
+  list(mode = "binned", breaks = brk,
+       centres = (brk[-1] + brk[-length(brk)]) / 2,
+       width   = diff(brk)[1])
+}
+
+.bin_counts <- function(vals, spec) {
+  idx <- if (spec$mode == "discrete") {
+    match(round(vals, 10), spec$centres)
+  } else {
+    findInterval(vals, spec$breaks, rightmost.closed = TRUE, all.inside = TRUE)
+  }
+  tab <- tabulate(idx[!is.na(idx)], nbins = length(spec$centres))
+  tibble::tibble(x = spec$centres, width = spec$width, prop = tab / sum(tab))
+}
+# ******************************************
+
+# ******************************************
+# Read and validate every file
+# ******************************************
+# Each failure mode is reported with its likely causes instead of being
+# collapsed into one generic message.
+.FAIL_HINTS <- list(
+  not_found = c(
+    "the name in SCENARIO_FILES is misspelled",
+    "bare names are looked up in the .qmd folder only; use a full path otherwise"),
+  cannot_open = c(
+    "the workbook is open in Excel - close it (AutoSave holds a lock on the file)",
+    "OneDrive/SharePoint placeholder not downloaded locally: right-click > Always keep on this device",
+    "the path is on a network drive that is not currently mounted",
+    "the file is .xls rather than .xlsx, or the download was truncated",
+    "no read permission on the folder"),
+  no_sheet = c(
+    "the inspection and inspection-save chunks were never run on this file",
+    "the sheet exists under a different name - adjust SH_INSPECT"),
+  bad_data = c(
+    "the save was interrupted, or the inspection chunk ran on a filtered subset",
+    "the metric columns were renamed or deleted in Excel"))
+
+.fail <- function(label, cause, detail) list(
+  label = label,
+  error = paste0(detail, "\n      likely causes:\n        - ",
+                 paste(.FAIL_HINTS[[cause]], collapse = "\n        - ")))
+
+# Redefines the .read_inspection() declared in the helper block above. This
+# version reports the actual cause of a failure instead of reporting every
+# problem as a missing sheet.
+.read_inspection <- function(path, label) {
+  if (is.na(path)) return(.fail(label, "not_found", "file not found"))
+
+  sheets <- try(openxlsx::getSheetNames(path), silent = TRUE)
+  if (inherits(sheets, "try-error"))
+    return(.fail(label, "cannot_open", paste0(
+      "could not be opened: ", trimws(conditionMessage(attr(sheets, "condition"))),
+      "\n      path: ", path)))
+
+  if (!SH_INSPECT %in% sheets)
+    return(.fail(label, "no_sheet", paste0(
+      "no '", SH_INSPECT, "' sheet; sheets present: ",
+      paste(sheets, collapse = " | "), "\n      path: ", path)))
+
+  # Second guard: the file can lock between listing the sheets and reading one.
+  df <- try(openxlsx::read.xlsx(path, sheet = SH_INSPECT), silent = TRUE)
+  if (inherits(df, "try-error"))
+    return(.fail(label, "cannot_open", paste0(
+      "sheet located but unreadable: ",
+      trimws(conditionMessage(attr(df, "condition"))), "\n      path: ", path)))
+
+  absent <- setdiff(METRIC_NAMES, names(df))
+  if (!nrow(df) || length(absent))
+    return(.fail(label, "bad_data", paste0(
+      nrow(df), " rows read; missing columns: ",
+      if (length(absent)) paste(absent, collapse = ", ") else "none")))
+
+  list(label = label, path = path, data = df, error = NA_character_)
+}
+
+qmd_dir  <- .qmd_dir()
+file_map <- if (is.null(SCENARIO_FILES)) .pick_inspection_files(qmd_dir) else
+                .resolve_files(SCENARIO_FILES, qmd_dir)
+
+reads  <- purrr::map2(unname(file_map), names(file_map), .read_inspection)
+failed <- purrr::keep(reads, ~ !is.na(.x$error))
+if (length(failed)) {
+  detail <- purrr::map_chr(failed, ~ paste0("  - ", .x$label, ": ", .x$error))
+  stop("Cannot plot. The following files have no usable ", SH_INSPECT, " data:\n",
+       paste(detail, collapse = "\n"),
+       "\nRun Modules 0 -> 4 on each of them, then the inspection and ",
+       "inspection-save chunks, and re-run this module.",
+       call. = FALSE)
+}
+
+purrr::walk(reads, function(r) {
+  message("\u2714 ", r$label, ": ", nrow(r$data), " rows from ", basename(r$path))
+  if ("Classifier" %in% names(r$data)) {
+    n_iter_named <- sum(grepl("^iter_", r$data$Classifier))
+    if (n_iter_named < nrow(r$data))
+      message("  \u26a0 ", nrow(r$data) - n_iter_named, " of ", nrow(r$data),
+              " rows are not named 'iter_*'. This Inspection sheet may come ",
+              "from the heterogeneous-classifiers chunk rather than from a ",
+              "Monte Carlo run.")
+  }
+})
+
+source_labels <- names(file_map)
+# ******************************************
+
+# ******************************************
+# Assemble the long-format value table
+# ******************************************
+long_df <- purrr::map_dfr(reads, function(r) {
+  r$data |>
+    dplyr::select(dplyr::all_of(METRIC_NAMES)) |>
+    dplyr::mutate(dplyr::across(dplyr::everything(), as.numeric)) |>
+    tidyr::pivot_longer(dplyr::everything(),
+                        names_to = "Metric", values_to = "Value") |>
+    dplyr::mutate(Source = r$label)
+}) |>
+  dplyr::mutate(
+    Source = factor(Source, levels = source_labels),
+    Metric = factor(Metric, levels = METRIC_NAMES)
+  )
+# ******************************************
+
+# ******************************************
+# Summary table
+# ******************************************
+# Gap_Lo and Gap_Hi are the distances from the median to each bound; their
+# ratio is the interval asymmetry in one number, equal to 1 when both arms
+# have the same length.
+dist_summary_df <- long_df |>
+  dplyr::group_by(Source, Metric) |>
+  dplyr::summarise(
+    N        = dplyr::n(),
+    NA_pct   = round(mean(is.na(Value)) * 100, 2),
+    Distinct = dplyr::n_distinct(round(Value[!is.na(Value)], 10)),
+    Mean     = mean(Value, na.rm = TRUE),
+    Median   = median(Value, na.rm = TRUE),
+    CI95_Lo  = .ci_lo(Value),
+    CI95_Hi  = .ci_hi(Value),
+    .groups  = "drop"
+  ) |>
+  dplyr::mutate(
+    Gap_Lo     = Median - CI95_Lo,
+    Gap_Hi     = CI95_Hi - Median,
+    Asym_Ratio = dplyr::if_else(Gap_Hi > 0, Gap_Lo / Gap_Hi, NA_real_)
+  )
+
+dist_table <- dist_summary_df |>
+  dplyr::mutate(dplyr::across(where(is.factor), as.character),
+                dplyr::across(where(is.numeric), ~ round(.x, 4))) |>
+  as.data.frame()
+
+print(dist_table, row.names = FALSE)
+
+if (SAVE_TABLE) {
+  tbl_dir <- if (is.null(PLOT_DIR)) dirname(unname(file_map)[1]) else PLOT_DIR
+  if (!dir.exists(tbl_dir)) dir.create(tbl_dir, recursive = TRUE)
+  tbl_path <- file.path(tbl_dir, paste0(TABLE_FILE, ".xlsx"))
+  openxlsx::write.xlsx(dist_table, tbl_path, overwrite = TRUE)
+  message("\u2714 ", tbl_path)
+}
+
+# Windows only. Tab-separated text with a comma decimal separator: pastes into
+# Excel as cells under a Spanish locale, and into Word via Convert Text to Table.
+if (COPY_TABLE && .Platform$OS.type == "windows") {
+  utils::write.table(dist_table, "clipboard-16384", sep = "\t",
+                     row.names = FALSE, quote = FALSE, dec = ",")
+  message("\u2714 summary copied to the clipboard")
+}
+# ******************************************
+
+# ******************************************
+# Bin the values
+# ******************************************
+metric_specs <- purrr::map(METRIC_NAMES, function(m) {
+  v <- long_df$Value[long_df$Metric == m & !is.na(long_df$Value)]
+  if (!length(v)) NULL else .bin_spec(v)
+})
+names(metric_specs) <- METRIC_NAMES
+
+empty_metrics <- METRIC_NAMES[vapply(metric_specs, is.null, logical(1))]
+if (length(empty_metrics))
+  message("\u26a0 No usable values, panel omitted: ",
+          paste(empty_metrics, collapse = ", "))
+
+bins_df <- purrr::map_dfr(source_labels, function(s) {
+  purrr::map_dfr(setdiff(METRIC_NAMES, empty_metrics), function(m) {
+    v <- long_df$Value[long_df$Source == s & long_df$Metric == m &
+                       !is.na(long_df$Value)]
+    if (!length(v)) return(NULL)
+    .bin_counts(v, metric_specs[[m]]) |>
+      dplyr::mutate(Source = s, Metric = m)
+  })
+}) |>
+  dplyr::left_join(
+    dplyr::select(dist_summary_df, Source, Metric, CI95_Lo, CI95_Hi) |>
+      dplyr::mutate(Source = as.character(Source), Metric = as.character(Metric)),
+    by = c("Source", "Metric")
+  ) |>
+  dplyr::mutate(
+    In_CI  = x >= CI95_Lo & x <= CI95_Hi,
+    Source = factor(Source, levels = source_labels),
+    Metric = factor(Metric, levels = METRIC_NAMES)
+  )
+# ******************************************
+
+# ******************************************
+# Build the figure
+# ******************************************
+one_file  <- length(source_labels) == 1L
+fill_cols <- stats::setNames(SERIES_COLS[seq_along(source_labels)], source_labels)
+line_cols <- if (one_file) stats::setNames("#3f3f3f", source_labels) else fill_cols
+
+vline_df <- dist_summary_df |>
+  tidyr::pivot_longer(c(CI95_Lo, CI95_Hi), names_to = "Bound", values_to = "x")
+
+p <- ggplot2::ggplot()
+
+if (one_file) {
+  p <- p +
+    ggplot2::geom_rect(
+      data = bins_df,
+      ggplot2::aes(xmin = x - width / 2, xmax = x + width / 2,
+                   ymin = 0, ymax = prop, fill = In_CI)
+    ) +
+    ggplot2::scale_fill_manual(
+      values = c(`TRUE` = unname(fill_cols[1]), `FALSE` = TAIL_COL),
+      guide  = "none"
+    )
+} else {
+  p <- p +
+    ggplot2::geom_rect(
+      data = bins_df,
+      ggplot2::aes(xmin = x - width / 2, xmax = x + width / 2,
+                   ymin = 0, ymax = prop, fill = Source),
+      alpha = FILL_ALPHA
+    ) +
+    ggplot2::scale_fill_manual(values = fill_cols, name = NULL)
+}
+
+p <- p +
+  ggplot2::geom_vline(
+    data = vline_df,
+    ggplot2::aes(xintercept = x, colour = Source),
+    linetype = "dashed", linewidth = 0.35, show.legend = FALSE
+  ) +
+  ggplot2::scale_colour_manual(values = line_cols, guide = "none") +
+  (if (LAYOUT == "grid")
+     ggplot2::facet_grid(Source ~ Metric, scales = "free_x")
+   else
+     ggplot2::facet_wrap(~ Metric, ncol = PLOT_NCOL, scales = "free_x")) +
+  ggplot2::labs(x = "Metric value", y = "Relative frequency") +
+  ggplot2::theme_minimal(base_size = 11) +
+  ggplot2::theme(panel.grid.minor   = ggplot2::element_blank(),
+                 panel.grid.major.x = ggplot2::element_blank(),
+                 legend.position    = "bottom")
+
+print(p)
+# ******************************************
+
+# ******************************************
+# Save the figure
+# ******************************************
+# Explicit devices rather than ggsave(): ggsave() routes PNG output through
+# ragg, which aborts when the installed ragg binary was built against a
+# different R graphics engine than the running version of R.
+if (SAVE_PLOT) {
+  out_dir <- if (is.null(PLOT_DIR)) dirname(unname(file_map)[1]) else PLOT_DIR
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  out_base  <- file.path(out_dir, PLOT_FILE)
+  has_cairo <- isTRUE(capabilities("cairo"))
+
+  if (has_cairo) {
+    grDevices::png(paste0(out_base, ".png"), width = PLOT_WIDTH, height = PLOT_HEIGHT,
+                   units = "in", res = PLOT_DPI, type = "cairo")
+  } else {
+    grDevices::png(paste0(out_base, ".png"), width = PLOT_WIDTH, height = PLOT_HEIGHT,
+                   units = "in", res = PLOT_DPI)
+  }
+  print(p); grDevices::dev.off()
+
+  if (has_cairo) {
+    grDevices::cairo_pdf(paste0(out_base, ".pdf"), width = PLOT_WIDTH, height = PLOT_HEIGHT)
+  } else {
+    grDevices::pdf(paste0(out_base, ".pdf"), width = PLOT_WIDTH, height = PLOT_HEIGHT)
+  }
+  print(p); grDevices::dev.off()
+
+  message("\u2714 ", out_base, ".png / .pdf")
+}
+# ******************************************
+```
+
